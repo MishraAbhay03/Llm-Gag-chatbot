@@ -3,10 +3,10 @@ FROM python:3.13.5-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    git \
+    tesseract-ocr \
+    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
+
 
 COPY requirements.txt ./
 COPY src/ ./src/
