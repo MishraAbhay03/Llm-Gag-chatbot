@@ -15,3 +15,5 @@ python-dotenv
 pytesseract
 pdf2image
 pillow
+torch
+torchvision
