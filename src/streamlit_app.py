@@ -224,10 +224,8 @@ with st.sidebar:
                                         img,
                                         config="--psm 6"
                                     )
-
-                                workers = min(8, os.cpu_count() or 4)
                                 
-                                with ThreadPoolExecutor(max_workers=workers) as executor:
+                                with ThreadPoolExecutor(max_workers=6) as executor:
                                     results = list(
                                         executor.map(ocr_page, images)
                                     )
