@@ -104,6 +104,7 @@ def load_embeddings():
     return HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2",
         model_kwargs={"device": "cpu"}
+        huggingfacehub_api_token=os.getenv("HF_TOKEN")
     )
 
 
@@ -226,7 +227,7 @@ with st.sidebar:
                                     )
 
 
-                                with ThreadPoolExecutor(max_workers=8) as executor:
+                                with ThreadPoolExecutor(max_workers=4) as executor:
                                     results = list(
                                         executor.map(ocr_page, images)
                                     )
