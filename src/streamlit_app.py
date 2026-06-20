@@ -22,7 +22,7 @@ print("MAIN.PY STARTED")
 # =====================================
 load_dotenv()
 
-api_key = os.getenv("Api_key")
+api_key = os.getenv("Api_key")#use your any api key for LLM
 hf_token = os.getenv("Huggingface_api_key")
 if hf_token:
     os.environ["HF_TOKEN"] = hf_token
@@ -104,7 +104,6 @@ def load_embeddings():
     return HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2",
         model_kwargs={"device": "cpu"}
-        huggingfacehub_api_token=os.getenv("HF_TOKEN")
     )
 
 
@@ -226,8 +225,9 @@ with st.sidebar:
                                         config="--psm 6"
                                     )
 
-
-                                with ThreadPoolExecutor(max_workers=4) as executor:
+                                workers = min(8, os.cpu_count() or 4)
+                                
+                                with ThreadPoolExecutor(max_workers=workers) as executor:
                                     results = list(
                                         executor.map(ocr_page, images)
                                     )
@@ -312,13 +312,15 @@ with st.sidebar:
                             for _ in chunks
                         ]
                     )
-
+                if not all_chunks:
+                    st.error("No text could be extracted from the uploaded files.")
+                    st.stop()
                 try:
                     embedding_model = load_embeddings()
                 except Exception as e:
                     st.error(f"Embedding error: {e}")
                     st.stop()
-
+                
                 try:
                     st.session_state.vector_store = FAISS.from_texts(
                         texts=all_chunks,
@@ -328,12 +330,6 @@ with st.sidebar:
                 except Exception as e:
                     st.error(f"FAISS error: {e}")
                     st.stop()
-
-                st.session_state.vector_store = FAISS.from_texts(
-                    texts=all_chunks,
-                    embedding=embedding_model,
-                    metadatas=metadatas,
-                )
 
                 st.session_state.processed_file = file_id
                 st.session_state.messages = []
