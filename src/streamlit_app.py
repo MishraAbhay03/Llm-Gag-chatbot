@@ -23,7 +23,9 @@ print("MAIN.PY STARTED")
 load_dotenv()
 
 api_key = os.getenv("Api_key")
-st.write("API Key Exists:", bool(api_key))
+hf_token = os.getenv("Huggingface_api_key")
+if hf_token:
+    os.environ["HF_TOKEN"] = hf_token
 
 if platform.system() == "Windows":
     pytesseract.pytesseract.tesseract_cmd = (
@@ -224,7 +226,7 @@ with st.sidebar:
                                     )
 
 
-                                with ThreadPoolExecutor(max_workers=6) as executor:
+                                with ThreadPoolExecutor(max_workers=8) as executor:
                                     results = list(
                                         executor.map(ocr_page, images)
                                     )
@@ -309,18 +311,12 @@ with st.sidebar:
                             for _ in chunks
                         ]
                     )
-                st.write("Loading embedding model...")
-                st.write("Loading embedding model...")
 
                 try:
                     embedding_model = load_embeddings()
-                    st.success("Embedding model loaded")
                 except Exception as e:
                     st.error(f"Embedding error: {e}")
                     st.stop()
-                
-                st.write("Creating FAISS index...")
-                st.write("Creating FAISS index...")
 
                 try:
                     st.session_state.vector_store = FAISS.from_texts(
