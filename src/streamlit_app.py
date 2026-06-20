@@ -21,9 +21,9 @@ print("MAIN.PY STARTED")
 # Load Environment Variables
 # =====================================
 load_dotenv()
-st.write("API Key Exists:", bool(api_key))
-api_key = os.getenv("Api_key")
 
+api_key = os.getenv("Api_key")
+st.write("API Key Exists:", bool(api_key))
 
 if platform.system() == "Windows":
     pytesseract.pytesseract.tesseract_cmd = (
