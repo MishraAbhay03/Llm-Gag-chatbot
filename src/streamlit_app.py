@@ -21,7 +21,7 @@ print("MAIN.PY STARTED")
 # Load Environment Variables
 # =====================================
 load_dotenv()
-
+st.write("API Key Exists:", bool(api_key))
 api_key = os.getenv("Api_key")
 
 
@@ -310,9 +310,27 @@ with st.sidebar:
                         ]
                     )
                 st.write("Loading embedding model...")
-                embedding_model = load_embeddings()
+                st.write("Loading embedding model...")
+
+                try:
+                    embedding_model = load_embeddings()
+                    st.success("Embedding model loaded")
+                except Exception as e:
+                    st.error(f"Embedding error: {e}")
+                    st.stop()
                 
                 st.write("Creating FAISS index...")
+                st.write("Creating FAISS index...")
+
+                try:
+                    st.session_state.vector_store = FAISS.from_texts(
+                        texts=all_chunks,
+                        embedding=embedding_model,
+                        metadatas=metadatas,
+                    )
+                except Exception as e:
+                    st.error(f"FAISS error: {e}")
+                    st.stop()
 
                 st.session_state.vector_store = FAISS.from_texts(
                     texts=all_chunks,
