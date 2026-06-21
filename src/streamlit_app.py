@@ -6,6 +6,8 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.vectorstores import FAISS
+from langchain.memory import ConversationBufferWindowMemory
+from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 from pypdf import PdfReader
 from docx import Document
 from pptx import Presentation
@@ -14,7 +16,6 @@ from pdf2image import convert_from_bytes
 from concurrent.futures import ThreadPoolExecutor
 import platform
 from dotenv import load_dotenv
-from pypdf import PdfReader
 
 print("MAIN.PY STARTED")
 # =====================================
@@ -23,6 +24,10 @@ print("MAIN.PY STARTED")
 load_dotenv()
 
 api_key = os.getenv("Api_key")#use your any api key for LLM
+if not api_key:
+    st.error("GROQ_API_KEY not found in .env file")
+    st.stop()
+    
 hf_token = os.getenv("Huggingface_api_key")
 if hf_token:
     os.environ["HF_TOKEN"] = hf_token
@@ -36,7 +41,7 @@ else:
     POPPLER_PATH = None
 
 # =====================================
-# Page Config
+# Page Config & Memory 
 # =====================================
 st.set_page_config(
     page_title="PDF Question Answering",
@@ -44,7 +49,11 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-print("PAGE CONFIG LOADED")
+memory = ConversationBufferWindowMemory(
+    k=5,
+    return_messages=True
+)
+
 # =====================================
 # Custom CSS
 # =====================================
@@ -94,6 +103,7 @@ model = ChatGroq(
     model="llama-3.1-8b-instant",
     temperature=0.7,
     max_tokens=1024,
+    streaming=True
 )
 
 # =====================================
@@ -102,7 +112,7 @@ model = ChatGroq(
 @st.cache_resource
 def load_embeddings():
     return HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
+        model_name="BAAI/bge-base-en-v1.5",
         model_kwargs={"device": "cpu"},
     )
 
@@ -111,14 +121,11 @@ def load_embeddings():
 # =====================================
 # Prompt
 # =====================================
-prompt = ChatPromptTemplate.from_template(
-    """
+prompt = ChatPromptTemplate.from_template("""
 You are a helpful assistant.
 
-Use the provided context to answer the user's question.
-
-If the answer cannot be found in the context,
-say "I don't know based on the uploaded document."
+Previous Conversation:
+{history}
 
 Context:
 {context}
@@ -127,8 +134,7 @@ Question:
 {question}
 
 Answer:
-"""
-)
+""")
 
 # =====================================
 # Retrieval Function
@@ -190,49 +196,64 @@ with st.sidebar:
                         # PDF
                         # ------------------
                         if extension == "pdf":
-
+                        
+                            uploaded_file.seek(0)
+                            pdf_bytes = uploaded_file.read()
+                        
                             reader = PdfReader(uploaded_file)
-
+                        
                             total_pages += len(reader.pages)
-
-                            pdf_text = ""
-
-                            for page in reader.pages:
-                                pdf_text += page.extract_text() or ""
-
-                            # If normal extraction worked
-                            if len(pdf_text.strip()) > 50:
-                                text = pdf_text
-
-                            # OCR fallback
-                            else:
-
-                                st.info(
-                                    f"Running OCR on {uploaded_file.name}..."
-                                )
-
-                                uploaded_file.seek(0)
-
-                                images = convert_from_bytes(
-                                    uploaded_file.read(),
-                                    dpi=150,
-                                    poppler_path=POPPLER_PATH
-                                )
-
-                                def ocr_page(img):
-                                    return pytesseract.image_to_string(
-                                        img,
-                                        config="--psm 6"
+                        
+                            page_images = None
+                        
+                            for page_no, page in enumerate(reader.pages):
+                        
+                                page_text = page.extract_text() or ""
+                        
+                                # Normal text page
+                                if len(page_text.strip()) > 50:
+                        
+                                    documents.append(
+                                        {
+                                            "source": uploaded_file.name,
+                                            "page": page_no + 1,
+                                            "text": page_text,
+                                        }
                                     )
-                                
-                                with ThreadPoolExecutor(max_workers=6) as executor:
-                                    results = list(
-                                        executor.map(ocr_page, images)
-                                    )
-
-                                ocr_text = "\n".join(results)
-
-                                text = ocr_text
+                        
+                                else:
+                        
+                                    # Convert PDF pages to images only once
+                                    if page_images is None:
+                        
+                                        page_images = convert_from_bytes(
+                                            pdf_bytes,
+                                            dpi=150,
+                                            poppler_path=POPPLER_PATH,
+                                        )
+                        
+                                    try:
+                        
+                                        ocr_text = pytesseract.image_to_string(
+                                            page_images[page_no],
+                                            config="--psm 6"
+                                        )
+                        
+                                        if ocr_text.strip():
+                        
+                                            documents.append(
+                                                {
+                                                    "source": uploaded_file.name,
+                                                    "page": page_no + 1,
+                                                    "text": ocr_text,
+                                                }
+                                            )
+                        
+                                    except Exception as e:
+                        
+                                        st.warning(
+                                            f"OCR failed on page {page_no + 1}: {e}"
+                                        )
 
                         # ------------------
                         # DOCX
@@ -276,6 +297,7 @@ with st.sidebar:
                             documents.append(
                                 {
                                     "source": uploaded_file.name,
+                                    "page": page_no + 1,
                                     "text": text,
                                 }
                             )
@@ -305,11 +327,14 @@ with st.sidebar:
                     all_chunks.extend(chunks)
 
                     metadatas.extend(
-                        [
-                            {"source": doc["source"]}
-                            for _ in chunks
-                        ]
-                    )
+                    [
+                        {
+                            "source": doc["source"],
+                            "page": doc["page"]
+                        }
+                        for _ in chunks
+                    ]
+                )
                 if not all_chunks:
                     st.error("No text could be extracted from the uploaded files.")
                     st.stop()
@@ -394,11 +419,12 @@ if not st.session_state.messages:
         " Upload a PDF from the sidebar and start asking questions."
     )
 
-for message in st.session_state.messages:
-
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
+history = "\n".join(
+    [
+        f"{msg['role']}: {msg['content']}"
+        for msg in st.session_state.messages[-10:]
+    ]
+)
 # =====================================
 # Chat Input
 # =====================================
@@ -446,15 +472,22 @@ if question:
                 )
 
                 formatted_prompt = prompt.format(
-                    context=context,
-                    question=question,
-                )
+                history=history,
+                context=context,
+                question=question,
+            )
                 
-                response = generate_answer(formatted_prompt)
+                placeholder = st.empty()
 
-                answer = response.content
-
-            st.markdown(answer)
+                answer = ""
+                
+                for chunk in model.stream(formatted_prompt):
+                
+                    if chunk.content:
+                
+                        answer += chunk.content
+                
+                        placeholder.markdown(answer)
 
             with st.expander("📚 Sources Used"):
 
@@ -462,20 +495,21 @@ if question:
                     relevant_chunks,
                     start=1
                 ):
-
                     source = chunk.metadata.get(
                         "source",
                         "Unknown"
                     )
-
+                    
+                    page = chunk.metadata.get(
+                        "page",
+                        "?"
+                    )
+                    
                     st.markdown(
-                        f"**Chunk {i}** | 📄 {source}"
+                        f"📄 {source} | Page {page}"
                     )
-
-                    st.write(
-                        chunk.page_content[:500]
-                    )
-
+                    
+                    st.write(chunk.page_content[:500])
         # Save Assistant Message
         st.session_state.messages.append(
             {
