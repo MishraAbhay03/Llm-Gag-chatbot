@@ -17,3 +17,4 @@ pdf2image
 pillow
 torch
 torchvision
+pdfplumber
