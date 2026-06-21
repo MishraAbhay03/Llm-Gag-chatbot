@@ -155,28 +155,38 @@ def build_history(messages, n=10):
 # =====================================================================
 def expand_query(original_query: str) -> str:
     """
-    Ask the LLM to rewrite the user's query to be more self-contained
-    and specific, as if referring to an uploaded document.
-    Fast — uses a short non-streaming call.
+    Rewrite ambiguous queries to be more self-contained.
+    Skip expansion for very short queries because they
+    often get rewritten incorrectly.
     """
+    if len(original_query.split()) <= 3:
+        return original_query
+
     try:
         expansion_prompt = (
-            "You are a search query optimizer. "
-            "Rewrite the following user question to be more specific and self-contained, "
-            "as if the user is querying an uploaded document. "
-            "Return ONLY the rewritten question — no explanation, no quotes.\n\n"
+            "You are a search query optimizer for a document Q&A system. "
+            "Rewrite the user's question to be more specific and self-contained "
+            "while preserving the original intent. "
+            "Do NOT introduce new assumptions, projects, topics, dates, or entities. "
+            "Return ONLY the rewritten question.\n\n"
             f"Original question: {original_query}\n\n"
             "Rewritten question:"
         )
+
         resp = model.invoke(expansion_prompt)
         expanded = resp.content.strip()
-        # Safety: if expansion looks broken or too long, fall back
-        if not expanded or len(expanded) > 300:
+
+        # Safety checks
+        if not expanded:
             return original_query
+
+        if len(expanded) > 300:
+            return original_query
+
         return expanded
+
     except Exception:
         return original_query
-
 # =====================================================================
 # Feature 4 — Hybrid Search (FAISS + BM25 with RRF)
 # =====================================================================
@@ -253,32 +263,50 @@ def hybrid_retrieve(query: str, top_k: int = 6) -> list:
 # Feature 2 — Document Summary (posted as chat message)
 # =====================================================================
 def generate_summary_streamed(raw_text: str):
-    """
-    Stream a structured summary into a Streamlit placeholder.
-    Returns the full summary string.
-    """
-    sample = raw_text[:4000]   # first ~4k chars is enough for a good summary
 
-    summary_prompt = (
-        "You are a document analyst. Given the following document excerpt, produce a structured summary.\n\n"
-        "Format your response EXACTLY like this (use these headers):\n\n"
-        "## 📄 Document Summary\n"
-        "<2-3 sentence overview of what this document is about>\n\n"
-        "## 🏷️ Key Topics\n"
-        "<bullet list of main topics covered>\n\n"
-        "## 🔍 Important Entities\n"
-        "<bullet list of key people, organisations, products, dates, or numbers mentioned>\n\n"
-        f"Document excerpt:\n{sample}\n\n"
-        "Summary:"
-    )
+    # Better sampling for large documents
+    if len(raw_text) > 8000:
+        sample = raw_text[:4000] + "\n...\n" + raw_text[-4000:]
+    else:
+        sample = raw_text
+
+    summary_prompt = f"""
+You are an expert document analyst.
+
+Analyze the uploaded document and generate a structured summary.
+
+Format:
+
+## 📄 Document Summary
+A concise overview of the document.
+
+## 🏷️ Key Topics
+- Topic 1
+- Topic 2
+
+## 🔍 Important Entities
+- People
+- Organizations
+- Technologies
+- Dates
+- Important numbers
+
+Document:
+{sample}
+
+Summary:
+"""
 
     placeholder = st.empty()
-    full_text   = ""
+    full_text = ""
+
     for chunk in model.stream(summary_prompt):
         if chunk.content:
             full_text += chunk.content
             placeholder.markdown(full_text + "▌")
+
     placeholder.markdown(full_text)
+
     return full_text
 
 
