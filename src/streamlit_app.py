@@ -65,7 +65,7 @@ st.markdown("""
 # API Key Guard
 # =====================================================================
 if not api_key:
-    st.error(" `Api_key` not found. Add your Groq API key as a HuggingFace Space secret named `Api_key`.")
+    st.error("⚠️ `Api_key` not found. Add your Groq API key as a HuggingFace Space secret named `Api_key`.")
     st.stop()
 
 # =====================================================================
@@ -262,11 +262,11 @@ def generate_summary_streamed(raw_text: str):
     summary_prompt = (
         "You are a document analyst. Given the following document excerpt, produce a structured summary.\n\n"
         "Format your response EXACTLY like this (use these headers):\n\n"
-        "##  Document Summary\n"
+        "## 📄 Document Summary\n"
         "<2-3 sentence overview of what this document is about>\n\n"
-        "##  Key Topics\n"
+        "## 🏷️ Key Topics\n"
         "<bullet list of main topics covered>\n\n"
-        "##  Important Entities\n"
+        "## 🔍 Important Entities\n"
         "<bullet list of key people, organisations, products, dates, or numbers mentioned>\n\n"
         f"Document excerpt:\n{sample}\n\n"
         "Summary:"
@@ -326,34 +326,84 @@ def describe_image_with_vlm(image_bytes: bytes, source: str, page: int):
 # Image Extraction from PDF
 # =====================================================================
 def extract_images_from_pdf(pdf_bytes: bytes, filename: str) -> list:
+    """
+    Smart image extraction — only sends genuinely visual content to VLM.
+
+    Rules:
+    1. Embedded images: only kept if the image covers >= MIN_IMAGE_AREA_RATIO
+       of the page area (filters out tiny icons, bullets, decorative dots).
+    2. Full-page fallback render: only triggered when the page has
+       < MIN_TEXT_CHARS of extractable text AND no qualifying embedded images.
+       This catches diagram-only pages while skipping text pages that happen
+       to have decorative borders/lines (the root cause of the 63-image bug).
+    """
+    MIN_IMAGE_AREA_RATIO = 0.08   # image must cover >= 8% of page to matter
+    MIN_TEXT_CHARS       = 120    # pages with more text than this are skipped for full-page render
+
     results = []
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            page_renders = None
+            page_renders = None  # lazy — only rendered if truly needed
+
             for page_no, page in enumerate(pdf.pages, start=1):
-                embedded = page.images
-                if embedded:
-                    for img_obj in embedded:
+                page_area     = (page.width or 1) * (page.height or 1)
+                page_text     = page.extract_text() or ""
+                has_good_text = len(page_text.strip()) >= MIN_TEXT_CHARS
+
+                embedded      = page.images or []
+                kept_images   = []
+
+                for img_obj in embedded:
+                    x0 = img_obj.get("x0", 0)
+                    y0 = img_obj.get("y0", 0)
+                    x1 = img_obj.get("x1", page.width)
+                    y1 = img_obj.get("y1", page.height)
+
+                    if x1 <= x0 or y1 <= y0:
+                        continue  # degenerate bbox
+
+                    img_area  = (x1 - x0) * (y1 - y0)
+                    img_ratio = img_area / page_area
+
+                    if img_ratio >= MIN_IMAGE_AREA_RATIO:
+                        kept_images.append(img_obj)
+
+                if kept_images:
+                    # Crop and render only the qualifying embedded images
+                    for img_obj in kept_images:
                         try:
                             x0 = img_obj.get("x0", 0);  y0 = img_obj.get("y0", 0)
                             x1 = img_obj.get("x1", page.width); y1 = img_obj.get("y1", page.height)
-                            if x1 <= x0 or y1 <= y0:
-                                continue
                             buf = io.BytesIO()
                             page.crop((x0, y0, x1, y1)).to_image(resolution=150).save(buf, format="PNG")
-                            results.append({"page": page_no, "image_bytes": buf.getvalue(), "source": filename})
+                            results.append({
+                                "page": page_no,
+                                "image_bytes": buf.getvalue(),
+                                "source": filename,
+                            })
                         except Exception:
                             continue
-                else:
-                    if page.extract_text() or page.rects or page.lines or page.curves:
-                        if page_renders is None:
-                            page_renders = convert_from_bytes(pdf_bytes, dpi=120, poppler_path=POPPLER_PATH)
-                        if page_no - 1 < len(page_renders):
-                            buf = io.BytesIO()
-                            page_renders[page_no - 1].save(buf, format="PNG")
-                            results.append({"page": page_no, "image_bytes": buf.getvalue(), "source": filename})
+
+                elif not has_good_text:
+                    # No qualifying embedded images AND very little text →
+                    # likely a diagram/infographic page → render full page
+                    if page_renders is None:
+                        page_renders = convert_from_bytes(
+                            pdf_bytes, dpi=120, poppler_path=POPPLER_PATH
+                        )
+                    if page_no - 1 < len(page_renders):
+                        buf = io.BytesIO()
+                        page_renders[page_no - 1].save(buf, format="PNG")
+                        results.append({
+                            "page": page_no,
+                            "image_bytes": buf.getvalue(),
+                            "source": filename,
+                        })
+                # else: page has good text and no big images → skip VLM entirely
+
     except Exception:
         pass
+
     return results
 
 
@@ -363,7 +413,7 @@ def extract_images_from_pdf(pdf_bytes: bytes, filename: str) -> list:
 def run_vlm_in_background(image_items: list, vector_store, lock):
     try:
         st.session_state.image_status     = "processing"
-        st.session_state.image_status_msg = f" Analyzing {len(image_items)} image(s) in background…"
+        st.session_state.image_status_msg = f"🔍 Analyzing {len(image_items)} image(s) in background…"
 
         embedding_model = load_embeddings()
         new_texts, new_metas = [], []
@@ -395,13 +445,13 @@ def run_vlm_in_background(image_items: list, vector_store, lock):
                 st.session_state.bm25_index = BM25Okapi(tokenized)
 
             st.session_state.image_status     = "done"
-            st.session_state.image_status_msg = f" {len(new_texts)} image(s) analyzed and indexed."
+            st.session_state.image_status_msg = f"✅ {len(new_texts)} image(s) analyzed and indexed."
         else:
             st.session_state.image_status     = "done"
-            st.session_state.image_status_msg = " No describable images found."
+            st.session_state.image_status_msg = "ℹ️ No describable images found."
     except Exception as e:
         st.session_state.image_status     = "error"
-        st.session_state.image_status_msg = f" Image analysis failed: {e}"
+        st.session_state.image_status_msg = f"⚠️ Image analysis failed: {e}"
 
 
 # =====================================================================
@@ -459,7 +509,7 @@ def extract_txt(uploaded_file):
 # Sidebar
 # =====================================================================
 with st.sidebar:
-    st.title(" Documents")
+    st.title("📂 Documents")
 
     uploaded_files = st.file_uploader(
         "Upload Documents",
@@ -545,7 +595,7 @@ with st.sidebar:
                 st.session_state.image_status    = "idle"
                 st.session_state.image_status_msg = ""
 
-            st.success(" Documents indexed — start chatting!")
+            st.success("✅ Documents indexed — start chatting!")
 
             sources = sorted({m["source"] for m in metadatas})
             for src in sources:
@@ -570,7 +620,7 @@ with st.sidebar:
                     )
                     t.start()
                     st.session_state.image_status     = "processing"
-                    st.session_state.image_status_msg = f" Analyzing {len(all_image_items)} image(s) in background…"
+                    st.session_state.image_status_msg = f"🔍 Analyzing {len(all_image_items)} image(s) in background…"
 
         else:
             st.info("Using cached vector store")
@@ -587,7 +637,7 @@ with st.sidebar:
 
     st.divider()
 
-    if st.button(" Clear Chat", use_container_width=True):
+    if st.button("🗑️ Clear Chat", use_container_width=True):
         st.session_state.messages = []
         st.rerun()
 
@@ -596,7 +646,7 @@ with st.sidebar:
 # =====================================================================
 st.markdown("""
 <div class="main-header">
-    <h1> RAG Document Q&A</h1>
+    <h1>📄 RAG Document Q&A</h1>
     <p>Upload a document and ask questions — images, diagrams, citations included</p>
 </div>
 """, unsafe_allow_html=True)
@@ -612,7 +662,7 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
         # Show expanded query caption under user messages if present
         if message["role"] == "user" and message.get("expanded"):
-            st.caption(f" Expanded query: _{message['expanded']}_")
+            st.caption(f"🔍 Expanded query: _{message['expanded']}_")
 
 # =====================================================================
 # Chat Input Row  — 📋 Summary button  +  chat_input side by side
@@ -645,7 +695,7 @@ if summary_clicked and doc_ready:
         # Generate fresh summary and stream it into chat
         st.session_state.messages.append({
             "role": "assistant",
-            "content": " Generating document summary…"
+            "content": "⏳ Generating document summary…"
         })
         with st.chat_message("assistant"):
             summary_text = generate_summary_streamed(st.session_state.summary_raw_text)
@@ -661,7 +711,7 @@ if summary_clicked and doc_ready:
 # =====================================================================
 if question:
     if not doc_ready:
-        st.warning(" Please upload a document first.")
+        st.warning("⚠️ Please upload a document first.")
     else:
         # ── Feature 3: Query Expansion ──
         with st.spinner("Expanding query…"):
@@ -678,7 +728,7 @@ if question:
         with st.chat_message("user"):
             st.markdown(question)
             if is_expanded:
-                st.caption(f" Expanded query: _{expanded_query}_")
+                st.caption(f"🔍 Expanded query: _{expanded_query}_")
 
         # ── Feature 4: Hybrid Retrieval ──
         with st.chat_message("assistant"):
@@ -715,7 +765,7 @@ if question:
             placeholder.markdown(answer)
 
             # Sources expander
-            with st.expander(" Sources Used"):
+            with st.expander("📚 Sources Used"):
                 for i, chunk in enumerate(relevant_chunks, start=1):
                     source = chunk.metadata.get("source", "Unknown")
                     page   = chunk.metadata.get("page", "?")
